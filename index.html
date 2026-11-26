@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head><meta name="robots" content="noindex, nofollow">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Плитки хиро</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 13px/1.4 system-ui, sans-serif; }
+  .stage { position: relative; height: 100vh; overflow: hidden; }
+  .hud {
+    position: fixed; left: 16px; bottom: 16px; padding: 8px 12px; border-radius: 10px;
+    background: rgba(255,255,255,.08); font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  .hud[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<div class="hud" id="hud" hidden></div>
+<script type="module">
+  import { mountTilesHero } from './tiles-hero.js?v=phone2';
+  const q = new URLSearchParams(location.search);
+  const debug = q.has('debug');
+  // ?nowave · ?wave=spline · ?length=12&period=3.4&swell=220 — зыбь · ?tile=151 — шаг ромбов в CSS px
+  const wave = q.has('nowave') ? { enabled: false } : q.get('wave') ? { mode: q.get('wave') } : {};
+  if (q.has('swell')) wave.swell = +q.get('swell');
+  if (q.has('length') || q.has('period')) {
+    wave.swells = [{ length: +(q.get('length') || 16), period: +(q.get('period') || 3.4), dir: [-1, 0], weight: 1 }];
+  }
+  const opts = { debug, wave };
+  if (q.has('tile')) opts.tilePx = () => +q.get('tile');
+  // ?noshapes — без образов · ?shapes=heart,star — какие и в каком порядке
+  if (q.has('noshapes')) opts.shapes = { enabled: false };
+  else if (q.get('shapes')) opts.shapes = { list: q.get('shapes').split(',') };
+  if (q.has('elev')) opts.elevationDeg = +q.get('elev');   // угол камеры, градусы
+  if (q.has('dpr')) opts.minDpr = opts.maxDpr = +q.get('dpr');   // для замеров: без адаптивной плотности
+  const field = mountTilesHero(document.getElementById('stage'), opts);
+  window.__field = field;
+  if (debug && field) {
+    const hud = document.getElementById('hud');
+    hud.hidden = false;
+    field.onStats = (s) => {
+      hud.textContent = `${s.fps.toFixed(0)} fps · ${s.count} плиток · ${(s.vertices / 1000).toFixed(0)}k вершин · dpr ${s.dpr}`;
+    };
+  }
+</script>
+</body>
+</html>

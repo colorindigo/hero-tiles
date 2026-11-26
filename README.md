@@ -1,0 +1,41 @@
+# Плитки хиро — прототип
+
+Интерактивное поле плиток для хиро главной appbooster.com вместо фонового видео. Чистый WebGL2, без зависимостей.
+
+- **Главная с полем:** https://colorindigo.github.io/hero-tiles/home.html — копия главной, скрипты сайта вырезаны.
+- **Поле на весь экран:** https://colorindigo.github.io/hero-tiles/
+
+## Что делает
+
+- Плитки качаются волной.
+- При наведении плитка поднимается и разгорается от красного до белого. Когда курсор уходит, плитка падает и гаснет.
+- Когда курсора нет или он стоит дольше 5 с, плитки собираются в фигуры: сердце, двойная галочка вверх, ▶.
+
+## Файлы
+
+| Файл | Что это |
+|---|---|
+| `tiles-hero.js` | модуль: `mountTilesHero(element, options)` |
+| `TilesHero.tsx` | обвязка для Next.js; без WebGL2 оставляет видео |
+| `index.html` | поле на весь экран |
+| `home.html` | копия главной с полем в хиро |
+
+## Встраивание
+
+```js
+import { mountTilesHero } from './tiles-hero.js';
+const field = mountTilesHero(document.querySelector('.hero__scene'), {
+  pointerTarget: document.querySelector('header.hero'),
+});
+// field.destroy() — снять поле
+```
+
+## Параметры демо-страницы
+
+| Параметр | Что делает |
+|---|---|
+| `?shapes=heart,play` | какие фигуры и в каком порядке |
+| `?noshapes` | без фигур |
+| `?nowave` | без волны |
+| `?tile=100` | шаг плитки, px |
+| `?debug` | счётчик кадров |
