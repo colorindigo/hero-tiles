@@ -18,7 +18,7 @@
 <div class="stage" id="stage"></div>
 <div class="hud" id="hud" hidden></div>
 <script type="module">
-  import { mountTilesHero } from './tiles-hero.js?v=phone2';
+  import { mountTilesHero } from './tiles-hero.js?v=scale1';
   const q = new URLSearchParams(location.search);
   const debug = q.has('debug');
   // ?nowave · ?wave=spline · ?length=12&period=3.4&swell=220 — зыбь · ?tile=151 — шаг ромбов в CSS px
@@ -40,7 +40,8 @@
     const hud = document.getElementById('hud');
     hud.hidden = false;
     field.onStats = (s) => {
-      hud.textContent = `${s.fps.toFixed(0)} fps · ${s.count} плиток · ${(s.vertices / 1000).toFixed(0)}k вершин · dpr ${s.dpr}`;
+      const sh = field.shapeState;
+      hud.textContent = `${s.fps.toFixed(0)} fps · ${s.count} плиток по ${s.tilePx} px · dpr ${s.dpr} · ${s.reduceMotion ? 'уменьшение движения ВКЛ' : 'движение обычное'} · образ: ${['пауза', 'проявление', 'держим', 'растворение'][sh.phase]}`;
     };
   }
 </script>

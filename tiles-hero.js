@@ -61,11 +61,9 @@ const SPLINE = {
 
 const DEFAULTS = {
   // Шаг ромбов по горизонтали, CSS px. Функция от ширины хоста.
-  // Камера отдалена по просьбе владельца 26.11.2026: было max(110, min(200, w/7)) — на ноутбуке 200 px, 145 плиток;
-  // стало 130 px, ≈340 плиток. Время кадра почти не меняется: его задаёт число пикселей, а не плиток.
-  // Узкие экраны (< 600 px) — ширина / 7.5: на телефоне 390 px шаг 52, и самая широкая фигура образа (6 шагов)
-  // помещается с запасом от краёв. На 600 px формулы сходятся (80), скачка нет. Решение владельца 26.11.2026.
-  tilePx: (w) => (w < 600 ? w / 7.5 : Math.max(80, Math.min(130, w / 11))),
+  // Шаг ромбов, CSS px: одна доля ширины на всех экранах (ширина / 11, не больше 130). Владелец, 27.11.2026: на телефоне
+  // плитки были «крупнее раза в 1.5» — при 52 px на 390 это 13 % ширины против 9 % на ноутбуке.
+  tilePx: (w) => Math.min(130, w / 11),
   maxDpr: 2,
   minDpr: 1,
   riseMs: 500,
@@ -109,7 +107,7 @@ const DEFAULTS = {
     list: ['heart', 'chevrons', 'play'],   // ▶ — сторы и видеореклама, тема сайта; смайл владелец снял
     size: 6,              // ширина фигуры в шагах ромбов (не больше 95 % ширины и 90 % высоты хиро)
     lift: 200,            // подъём плиток образа, единиц Spline (наведение — 322)
-    outline: 15,          // толщина белого контура на верхе плитки, единиц Spline (скос — ещё 15), ≈ 1.2 px на плитке 130
+    outlinePx: 2.4,       // ширина контура от края плитки внутрь, CSS px — одинаковая на любом размере плитки
     outlineColor: 0x80,   // белый, приглушённый вдвое по просьбе владельца (26.11.2026: «бордер приглушить раза в 2»)
     idleMs: 1200,         // курсор ушёл — через столько начинается образ
     inMs: 500, spreadInMs: 700,      // подъём плитки и разброс по времени: волной от центра фигуры
@@ -429,6 +427,7 @@ export function mountTilesHero(host, userOpts = {}) {
   gl.uniform4f(U.uMatte, M.top / 255, M.wallLeft / 255, M.wallFront / 255, M.sideDropRight / 255);
   gl.uniform4f(U.uBevel, M.bevelGain / 255, M.bevelPow, M.bevelSide / 255, M.sideDropLeft / 255);
 
+  let worldPerPx = 1;
   let W = 1, H = 1, dpr = Math.min(o.maxDpr, window.devicePixelRatio || 1), halfW = 1, halfH = 1, viewProj = null;
   let count = 0, offsets = null, dyn = null;
   let liftV, liftFrom, phase, tStart;   // состояние наведения на плитку
@@ -455,7 +454,7 @@ export function mountTilesHero(host, userOpts = {}) {
     const r = host.getBoundingClientRect();
     W = Math.max(1, r.width); H = Math.max(1, r.height);
     resizeCanvas();
-    const worldPerPx = (P * Math.SQRT2) / o.tilePx(W, H);
+    worldPerPx = (P * Math.SQRT2) / o.tilePx(W, H);
     halfW = (W / 2) * worldPerPx; halfH = (H / 2) * worldPerPx;
     const proj = new Float32Array([
       1 / halfW, 0, 0, 0, 0, 1 / halfH, 0, 0, 0, 0, -2 / 60000, 0, 0, 0, -1, 1,
@@ -572,7 +571,8 @@ export function mountTilesHero(host, userOpts = {}) {
   }
 
   /* образы: плитки собираются в фигуру, когда курсора на поле нет (правило 38 — источник эффекта: отсутствие курсора) */
-  const sh = o.shapes, shapesOn = sh.enabled && !reduceMotion && sh.list.length > 0;
+  // «Уменьшение движения»: волны нет, плитки образа не поднимаются — образ только проявляется контуром и гаснет
+  const sh = o.shapes, shapesOn = sh.enabled && sh.list.length > 0;
   let seed = 0x2f6b1;   // свой генератор: одинаковые прогоны дают одинаковые кадры
   const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
   const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -730,7 +730,7 @@ export function mountTilesHero(host, userOpts = {}) {
     // ocean: подъём наведения идёт поверх волны — плитка поднимается на liftY от того места, где она сейчас
     // (решение владельца 26.11.2026). spline: наведение гасит просадку, иначе иконка уходит в гнездо.
     gl.uniform4f(U.uY, I.baseY, I.liftY, waveOn ? (ocean ? wv.swell : wv.amplitude) : 0, ocean ? 0 : 1);
-    gl.uniform4f(U.uShape, sh.lift, SPLINE.tile.bevel + sh.outline, sh.outlineColor / 255, 1);
+    gl.uniform4f(U.uShape, reduceMotion ? 0 : sh.lift, sh.outlinePx * worldPerPx, sh.outlineColor / 255, 1);
     gl.drawElementsInstanced(gl.TRIANGLES, geo.indices.length, gl.UNSIGNED_SHORT, 0, n);
     gl.bindVertexArray(null);
   }
@@ -743,7 +743,7 @@ export function mountTilesHero(host, userOpts = {}) {
       fps = (frames * 1000) / acc; frames = 0; acc = 0;
       // просел кадр — уменьшаем плотность пикселей ступенями
       if (fps < 50 && dpr > o.minDpr) { slow++; if (slow >= 2) { dpr = Math.max(o.minDpr, dpr - 0.25); resizeCanvas(); slow = 0; } } else slow = 0;
-      if (o.debug && api.onStats) api.onStats({ fps, dpr, count, vertices: geo.vertexCount * count * (socketsOn ? 2 : 1) });
+      if (o.debug && api.onStats) api.onStats({ ...api.stats, fps });
     }
     update(frozen ?? now);
     draw();
@@ -767,7 +767,7 @@ export function mountTilesHero(host, userOpts = {}) {
 
   const api = {
     canvas,
-    get stats() { return { fps, dpr, count, vertices: geo.vertexCount * count * (socketsOn ? 2 : 1), triangles: (geo.indices.length / 3) * count * (socketsOn ? 2 : 1) }; },
+    get stats() { return { fps, dpr, count, vertices: geo.vertexCount * count * (socketsOn ? 2 : 1), triangles: (geo.indices.length / 3) * count * (socketsOn ? 2 : 1), tilePx: Math.round(o.tilePx(W, H)), reduceMotion }; },
     onStats: null,
     onFrame: null,
     /** Отладка: образ — фаза (0 пауза, 1 проявление, 2 держим, 3 растворение), фигура, сколько плиток, где. */
