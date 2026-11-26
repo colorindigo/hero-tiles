@@ -18,7 +18,7 @@
 <div class="stage" id="stage"></div>
 <div class="hud" id="hud" hidden></div>
 <script type="module">
-  import { mountTilesHero } from './tiles-hero.js?v=echo1';
+  import { mountTilesHero } from './tiles-hero.js?v=clean1';
   const q = new URLSearchParams(location.search);
   const debug = q.has('debug');
   // ?nowave · ?wave=spline · ?length=12&period=3.4&swell=220 — зыбь · ?tile=151 — шаг ромбов в CSS px
@@ -32,7 +32,6 @@
   // ?noshapes — без образов · ?shapes=heart,star — какие и в каком порядке
   if (q.has('noshapes')) opts.shapes = { enabled: false };
   else if (q.get('shapes')) opts.shapes = { list: q.get('shapes').split(',') };
-  if (q.has('noecho')) opts.echo = { enabled: false };       // без контура, уходящего вниз при взлёте
   if (q.has('elev')) opts.elevationDeg = +q.get('elev');   // угол камеры, градусы
   if (q.has('dpr')) opts.minDpr = opts.maxDpr = +q.get('dpr');   // для замеров: без адаптивной плотности
   const field = mountTilesHero(document.getElementById('stage'), opts);
