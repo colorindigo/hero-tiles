@@ -115,18 +115,14 @@ const DEFAULTS = {
     outMs: 1000, spreadOutMs: 900,   // падение плитки и разброс: вразнобой
     gapMs: 1400,          // пауза между образами
   },
-  // Под плиткой, которую держит курсор, вниз уходят маленькие плитки той же формы: рождаются красными (цвет
-  // свечения плитки при наведении), белеют, мельчают и тают. Без свечения и ореолов — владелец, 27.11.2026:
-  // «давай формы как тейлы уходят вниз, без глоу дурацкого».
-  sparks: {
+  // Эхо взлёта: плитка под курсором взлетает, а её контур того же размера отделяется и уходит вниз по той же
+  // вертикали — краснеет, белеет, тает. Владелец, 27.11.2026: «просто есть форма плитки, её размер; она одна при
+  // ховере взлетает, а её форма в виде бордера начинает идти вниз этого же размера по одной траектории самой таблетки».
+  echo: {
     enabled: true,
-    rate: 30,                 // плиток в секунду с одной плитки
-    life: [0.7, 1.2],         // жизнь, с
-    speed: [400, 800],        // скорость вниз на старте, единиц Spline в секунду (плитка — 1034)
-    spread: 110,              // разлёт вбок, единиц в секунду
-    gravity: 700,             // ускорение вниз, единиц в секунду²
-    size: [0.12, 0.2],        // ширина маленькой плитки, доля шага ромба (130 px → 16–26 px); к концу — вдвое меньше
-    color: [1, 0.3786, 0.3786],   // красный свечения плитки при наведении (слой depth Spline)
+    distance: 2,              // путь вниз в подъёмах наведения (322 × 2)
+    durationMs: 900,          // путь — по кривой «вперёд», угасание — по кривой «назад»
+    color: [1, 0.3786, 0.3786],   // красный свечения плитки при наведении (слой depth Spline); к концу — белый
   },
   background: [0, 0, 0],
   pointerTarget: null,   // элемент, на котором слушать курсор; по умолчанию window
@@ -226,6 +222,7 @@ uniform mat4 uViewProj;
 uniform vec4 uY;                      // base, lift, wave, насколько наведение гасит волну (0..1)
 uniform float uWaveTint;              // 1 — волна меняет цвет (spline), 0 — только двигает (ocean)
 uniform vec4 uShape;                  // подъём образа, ширина контура от края, яркость контура, 1 — иконки / 0 — гнёзда
+uniform float uGhost;                 // 1 — проход «эхо»: aDyn — мировая высота, доля пути, непрозрачность
 // centroid: на скосе, который стоит почти ребром к камере, треугольники вырождаются, и без него сглаживание
 // берёт значения за краем треугольника — на вершине силуэта вылезал одиночный красный пиксель.
 centroid out float vColorY;           // высота, по которой красит слой depth
@@ -233,6 +230,7 @@ centroid out vec3 vWorld;
 centroid out vec3 vNrm;
 out float vLift;
 out float vShape;                     // сила образа на плитке 0..1 (уже за вычетом наведения)
+out float vEcho;                      // эхо: доля пути 0..1
 centroid out vec2 vLocal;             // точка в плоскости плитки: по ней считается контур
 centroid out float vH;                         // высота точки внутри плитки, 0 — низ, 1 — верх
 void main() {
@@ -241,6 +239,8 @@ void main() {
   float shp = aDyn.z * (1.0 - hov) * uShape.w;          // наведение важнее образа
   float waveY = (1.0 - hov * uY.w) * aDyn.y * uY.z;
   float y = uY.x + hov * uY.y + shp * uShape.x + waveY;
+  if (uGhost > 0.5) { y = aDyn.x; hov = 0.0; waveY = 0.0; shp = aDyn.z; }
+  vEcho = aDyn.y;
   vec3 w = vec3(aPos.x + aOffset.x, aPos.y + y, aPos.z + aOffset.y);
   vWorld = w;
   // подъём образа не красит плитку: свечение по высоте — только у наведения
@@ -258,6 +258,7 @@ centroid in vec3 vWorld;
 centroid in vec3 vNrm;
 in float vLift;
 in float vShape;
+in float vEcho;
 centroid in vec2 vLocal;
 centroid in float vH;
 centroid in float vColorY;
@@ -275,12 +276,24 @@ uniform vec2 uOrigin;                 // originY покоя, наведения
 uniform vec4 uFres;                  // цвет, bias, scale, intensity
 uniform vec4 uShape;                  // подъём образа, ширина контура от края, яркость контура, —
 uniform vec2 uTile;                   // половина стороны плитки без скругления, радиус скругления
+uniform float uGhost;                 // 1 — проход «эхо»: только контур верха
+uniform vec3 uEchoC;                  // цвет эха в начале пути
 out vec4 outColor;
 
 vec3 screenB(vec3 a, vec3 b) { return 1.0 - (1.0 - a) * (1.0 - b); }
 
 void main() {
   vec3 N = normalize(vNrm);
+  if (uGhost > 0.5) {
+    // эхо взлёта: только контур верха плитки, краснеет → белеет, тает
+    vec2 q0 = abs(vLocal) - vec2(uTile.x);
+    float d0 = -(length(max(q0, 0.0)) + min(max(q0.x, q0.y), 0.0) - uTile.y);
+    float aa0 = fwidth(d0);
+    float a0 = vShape * (1.0 - smoothstep(uShape.y - aa0, uShape.y + aa0, d0)) * smoothstep(0.15, 0.5, N.y);
+    if (a0 < 0.002) discard;
+    outColor = vec4(mix(uEchoC, vec3(1.0), vEcho) * a0, a0);
+    return;
+  }
   float L = clamp(vLift, 0.0, 1.0);
   vec3 c = vec3(0.0);                                   // color: чёрный
 
@@ -335,35 +348,6 @@ void main() {
   outColor = vec4(c, 1.0);
 }`;
 
-/* ---------- Маленькие плитки под поднятой: точки-спрайты в форме ромба плитки ---------- */
-const VERT_P = `#version 300 es
-layout(location=0) in vec4 aP;      // xyz — мир, w — размер спрайта, CSS px
-layout(location=1) in vec4 aC;      // цвет и непрозрачность
-uniform mat4 uViewProj;
-uniform float uPx;                  // пикселей устройства на CSS px
-out vec4 vC;
-void main() {
-  vC = aC;
-  gl_Position = uViewProj * vec4(aP.xyz, 1.0);
-  gl_PointSize = aP.w * uPx;
-}`;
-const FRAG_P = `#version 300 es
-precision mediump float;
-in vec4 vC;
-out vec4 outColor;
-void main() {
-  // верх плитки на экране: квадрат со скруглением 280/517, повёрнутый на 45° и сжатый по высоте камерой 45°
-  vec2 p = (gl_PointCoord - 0.5) * 2.0;
-  p.y /= 0.7071;
-  vec2 r = vec2(p.x + p.y, p.x - p.y) * 0.7071;
-  float h = 0.7071, rad = 0.54 * h;
-  vec2 q = abs(r) - vec2(h - rad);
-  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
-  float aa = fwidth(d);
-  float a = vC.a * (1.0 - smoothstep(-aa, aa, d));
-  outColor = vec4(vC.rgb * a, a);
-}`;
-
 /* ---------- Матрицы ---------- */
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -387,7 +371,7 @@ function compile(gl, type, src) {
 export function mountTilesHero(host, userOpts = {}) {
   const o = { ...DEFAULTS, ...userOpts, wave: { ...DEFAULTS.wave, ...(userOpts.wave || {}) },
     shapes: { ...DEFAULTS.shapes, ...(userOpts.shapes || {}) },
-    sparks: { ...DEFAULTS.sparks, ...(userOpts.sparks || {}) } };
+    echo: { ...DEFAULTS.echo, ...(userOpts.echo || {}) } };
   const canvas = document.createElement('canvas');
   canvas.className = 'tiles-hero__canvas';
   canvas.setAttribute('aria-hidden', 'true');
@@ -411,7 +395,7 @@ export function mountTilesHero(host, userOpts = {}) {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   const U = {};
   for (const n of ['uViewProj', 'uY', 'uWaveTint', 'uCamPos', 'uCamH', 'uCamR', 'uMatte', 'uBevel', 'uC0', 'uC1', 'uS0', 'uS1',
-    'uNF', 'uOrigin', 'uFres', 'uShape', 'uTile']) U[n] = gl.getUniformLocation(prog, n);
+    'uNF', 'uOrigin', 'uFres', 'uShape', 'uTile', 'uGhost', 'uEchoC']) U[n] = gl.getUniformLocation(prog, n);
 
   /* геометрия */
   const geo = buildTile(SPLINE.tile);
@@ -422,9 +406,9 @@ export function mountTilesHero(host, userOpts = {}) {
     if (loc != null) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); }
     return b;
   };
-  mkBuf(geo.positions, 0, 3);
-  mkBuf(geo.normals, 1, 3);
-  mkBuf(geo.indices, null, 0, gl.ELEMENT_ARRAY_BUFFER);
+  const posBuf = mkBuf(geo.positions, 0, 3);
+  const nrmBuf = mkBuf(geo.normals, 1, 3);
+  const idxBuf = mkBuf(geo.indices, null, 0, gl.ELEMENT_ARRAY_BUFFER);
   const offBuf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, offBuf);
   gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
@@ -433,26 +417,22 @@ export function mountTilesHero(host, userOpts = {}) {
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(3, 1);
   gl.bindVertexArray(null);
 
-  /* искры: программа, пул, буфер */
-  const progP = gl.createProgram();
-  gl.attachShader(progP, compile(gl, gl.VERTEX_SHADER, VERT_P));
-  gl.attachShader(progP, compile(gl, gl.FRAGMENT_SHADER, FRAG_P));
-  gl.linkProgram(progP);
-  if (!gl.getProgramParameter(progP, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progP));
-  const UP = { uViewProj: gl.getUniformLocation(progP, 'uViewProj'), uPx: gl.getUniformLocation(progP, 'uPx') };
-  const PMAX = 600, GMAX = 0;                          // маленьких плиток в пуле; свечений под плитками нет
-  const pX = new Float32Array(PMAX), pY = new Float32Array(PMAX), pZ = new Float32Array(PMAX);
-  const pVX = new Float32Array(PMAX), pVY = new Float32Array(PMAX), pVZ = new Float32Array(PMAX);
-  const pAge = new Float32Array(PMAX), pLife = new Float32Array(PMAX), pSize = new Float32Array(PMAX);
-  let pN = 0, gN = 0;
-  const pData = new Float32Array((PMAX + GMAX) * 8);  // свечения первыми, затем искры
-  const vaoP = gl.createVertexArray();
-  gl.bindVertexArray(vaoP);
-  const pBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, pBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, pData.byteLength, gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, 0);
-  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 16);
+  /* эхо взлёта: та же геометрия плитки, свои экземпляры */
+  const EMAX = 24;
+  const eX = new Float32Array(EMAX), eZ = new Float32Array(EMAX), eY0 = new Float32Array(EMAX), eT0 = new Float64Array(EMAX);
+  let eN = 0;
+  const eOff = new Float32Array(EMAX * 2), eDyn = new Float32Array(EMAX * 3);
+  const vaoE = gl.createVertexArray();
+  gl.bindVertexArray(vaoE);
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, nrmBuf); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+  const eOffBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, eOffBuf); gl.bufferData(gl.ARRAY_BUFFER, eOff.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
+  const eDynBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, eDynBuf); gl.bufferData(gl.ARRAY_BUFFER, eDyn.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(3, 1);
   gl.bindVertexArray(null);
 
   /* материал: постоянная часть */
@@ -496,8 +476,7 @@ export function mountTilesHero(host, userOpts = {}) {
   let W = 1, H = 1, dpr = Math.min(o.maxDpr, window.devicePixelRatio || 1), halfW = 1, halfH = 1, viewProj = null;
   let count = 0, offsets = null, dyn = null;
   let liftV, liftFrom, phase, tStart;   // состояние наведения на плитку
-  let shapeV, shapeFrom, shapeDelay, shapeMember;
-  let sparkAcc;                                       // искры: накопитель рождения на плитку   // образ: сила на плитке, с чего падает, задержка, входит ли
+  let shapeV, shapeFrom, shapeDelay, shapeMember;   // образ: сила на плитке, с чего падает, задержка, входит ли
   const shape = { phase: 0, t: 0, k: -1, lastActive: 0, first: true };   // 0 пауза, 1 проявление, 2 держим, 3 растворение
 
   const P = SPLINE.pitch;
@@ -559,7 +538,6 @@ export function mountTilesHero(host, userOpts = {}) {
     dyn = new Float32Array(count * 3);
     shapeV = new Float32Array(count); shapeFrom = new Float32Array(count);
     shapeDelay = new Float32Array(count); shapeMember = new Uint8Array(count);
-    sparkAcc = new Float32Array(count);
     if (shape.phase !== 0) { shape.phase = 0; shape.t = performance.now(); }   // раскладка сменилась — образ заново
     liftV = new Float32Array(count); liftFrom = new Float32Array(count);
     phase = new Uint8Array(count); tStart = new Float64Array(count);
@@ -717,47 +695,29 @@ export function mountTilesHero(host, userOpts = {}) {
     }
   }
 
-  /* искры: рождаются под плиткой, которую держит курсор, падают, белеют и тают */
-  const sp = o.sparks, sparksOn = sp.enabled && !reduceMotion;
-  let sseed = 0x51a7c;   // свой генератор: образы и искры не сбивают друг другу случайность
-  const srnd = () => (sseed = (Math.imul(sseed, 1664525) + 1013904223) >>> 0) / 4294967296;
-  // Искры рождаются по передней кромке низа плитки (той, что смотрит на камеру): оттуда они видны сразу,
-  // а из-под середины низа их закрыла бы сама плитка
-  const SR = SPLINE.tile.size * 0.46, camA = Math.atan2(hz[2], hz[0]);
-  let lastUpd = null;
-  function emitSpark(x, y, z) {
-    if (pN >= PMAX) return;
-    const a = camA + (srnd() * 2 - 1) * 1.25, r = SR * (0.75 + 0.25 * srnd());
-    pX[pN] = x + Math.cos(a) * r; pY[pN] = y; pZ[pN] = z + Math.sin(a) * r;
-    pVX[pN] = (srnd() * 2 - 1) * sp.spread + Math.cos(a) * sp.spread * 0.5;
-    pVZ[pN] = (srnd() * 2 - 1) * sp.spread + Math.sin(a) * sp.spread * 0.5;
-    pVY[pN] = -(sp.speed[0] + srnd() * (sp.speed[1] - sp.speed[0]));
-    pAge[pN] = 0; pLife[pN] = sp.life[0] + srnd() * (sp.life[1] - sp.life[0]);
-    pSize[pN] = sp.size[0] + srnd() * (sp.size[1] - sp.size[0]);
-    pN++;
+  /* эхо взлёта: контур плитки уходит вниз по её вертикали */
+  const ec = o.echo, echoOn = ec.enabled && !reduceMotion;
+  function emitEcho(x, z, y0, now) {
+    if (eN >= EMAX) { eN--; for (let k = 0; k < eN; k++) { eX[k] = eX[k + 1]; eZ[k] = eZ[k + 1]; eY0[k] = eY0[k + 1]; eT0[k] = eT0[k + 1]; } }
+    eX[eN] = x; eZ[eN] = z; eY0[eN] = y0; eT0[eN] = now; eN++;
   }
-  function updateSparks(dt) {
-    const tile = o.tilePx(W, H), c = sp.color;
+  function updateEcho(now) {
+    const dist = ec.distance * SPLINE.icon.liftY;
     let j = 0;
-    for (let k = 0; k < pN; k++) {
-      const age = pAge[k] + dt;
-      if (age >= pLife[k]) continue;
-      const vy = pVY[k] - sp.gravity * dt;
-      pX[j] = pX[k] + pVX[k] * dt; pY[j] = pY[k] + vy * dt; pZ[j] = pZ[k] + pVZ[k] * dt;
-      pVX[j] = pVX[k]; pVY[j] = vy; pVZ[j] = pVZ[k]; pAge[j] = age; pLife[j] = pLife[k]; pSize[j] = pSize[k];
-      const t = age / pLife[j], q = (gN + j) * 8;
-      pData[q] = pX[j]; pData[q + 1] = pY[j]; pData[q + 2] = pZ[j];
-      pData[q + 3] = Math.max(3, pSize[j] * tile * (1 - 0.5 * t));   // мельчает: уходит вниз, вглубь
-      pData[q + 4] = c[0] + (1 - c[0]) * t; pData[q + 5] = c[1] + (1 - c[1]) * t; pData[q + 6] = c[2] + (1 - c[2]) * t;
-      pData[q + 7] = 1 - easeOut(t);                  // гаснет по кривой «назад»: долго горит, быстро тает
+    for (let k = 0; k < eN; k++) {
+      const p = (now - eT0[k]) / ec.durationMs;
+      if (p >= 1 || p < 0) continue;
+      eX[j] = eX[k]; eZ[j] = eZ[k]; eY0[j] = eY0[k]; eT0[j] = eT0[k];
+      eOff[j * 2] = eX[j]; eOff[j * 2 + 1] = eZ[j];
+      eDyn[j * 3] = eY0[j] - dist * easeIn(p);       // путь вниз — кривая «вперёд»: резкий старт, мягкий конец
+      eDyn[j * 3 + 1] = p;                           // краснеет → белеет
+      eDyn[j * 3 + 2] = 1 - easeOut(p);              // тает по кривой «назад»
       j++;
     }
-    pN = j;
+    eN = j;
   }
 
   function update(now) {
-    const dt = lastUpd === null ? 0 : Math.min(Math.max((now - lastUpd) / 1000, 0), 0.05);
-    lastUpd = now; gN = 0;
     updateShape(now);
     const ptr = pointerActive(now) ? pointer : null;
     for (let i = 0; i < count; i++) {
@@ -773,7 +733,11 @@ export function mountTilesHero(host, userOpts = {}) {
       let v = liftV[i];
       switch (phase[i]) {
         case 0: // покой
-          if (near) { phase[i] = 1; liftFrom[i] = v; tStart[i] = now; }
+          if (near) {
+            phase[i] = 1; liftFrom[i] = v; tStart[i] = now;
+            // взлёт: контур плитки отделяется и уходит вниз с того места, где плитка стоит сейчас
+            if (echoOn) emitEcho(x, z, SPLINE.icon.baseY + (waveOn ? w * (ocean ? wv.swell : wv.amplitude) : 0), now);
+          }
           break;
         case 1: { // подъём — доходит до верха, даже если курсор уже ушёл
           const p = (now - tStart[i]) / o.riseMs;
@@ -793,36 +757,16 @@ export function mountTilesHero(host, userOpts = {}) {
         }
       }
       liftV[i] = v;
-      if (sparksOn && (phase[i] === 1 || phase[i] === 2) && v > 0.25) {
-        // курсор держит плитку: из-под низа вниз уходят маленькие плитки
-        const waveY = waveOn ? (1 - v * (ocean ? 0 : 1)) * w * (ocean ? wv.swell : wv.amplitude) : 0;
-        const yb = SPLINE.icon.baseY + v * SPLINE.icon.liftY + waveY;
-        sparkAcc[i] += sp.rate * dt * v;
-        while (sparkAcc[i] >= 1) { emitSpark(x, yb - 4, z); sparkAcc[i] -= 1; }
-      }
       dyn[i * 3] = v;
       dyn[i * 3 + 1] = w;
       dyn[i * 3 + 2] = shapeV[i];
     }
-    if (pN) updateSparks(dt);
+    if (eN) updateEcho(now);
   }
 
   let soloIdx = -1;    // отладка: рисовать одну плитку на чёрном
-  function drawPoints(first, n) {
-    gl.useProgram(progP);
-    gl.uniformMatrix4fv(UP.uViewProj, false, viewProj);
-    gl.uniform1f(UP.uPx, dpr);
-    gl.bindVertexArray(vaoP);
-    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // обычное наложение, без свечения
-    gl.depthMask(false);
-    gl.disable(gl.DEPTH_TEST);   // поверх поля: из-под передней кромки вниз
-    gl.drawArrays(gl.POINTS, first, n);
-    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
-    gl.bindVertexArray(null);
-  }
   function draw() {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (gN + pN) { gl.bindBuffer(gl.ARRAY_BUFFER, pBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, pData.subarray(0, (gN + pN) * 8)); }
     gl.useProgram(prog);
     gl.uniformMatrix4fv(U.uViewProj, false, viewProj);
     gl.uniform1f(U.uWaveTint, ocean ? 0 : 1);
@@ -861,8 +805,21 @@ export function mountTilesHero(host, userOpts = {}) {
     gl.uniform4f(U.uShape, reduceMotion ? 0 : sh.lift, sh.outlinePx * worldPerPx, sh.outlineColor / 255, 1);
     gl.drawElementsInstanced(gl.TRIANGLES, geo.indices.length, gl.UNSIGNED_SHORT, 0, n);
     gl.bindVertexArray(null);
-    // маленькие плитки — после поля и поверх него: уходят из-под передней кромки вниз
-    if (pN) drawPoints(gN, pN);
+    // эхо — после поля и поверх него: контур уходит вниз сквозь соседей, его видно на всём пути
+    if (eN) {
+      gl.bindVertexArray(vaoE);
+      gl.bindBuffer(gl.ARRAY_BUFFER, eOffBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, eOff.subarray(0, eN * 2));
+      gl.bindBuffer(gl.ARRAY_BUFFER, eDynBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, eDyn.subarray(0, eN * 3));
+      gl.uniform1f(U.uGhost, 1);
+      gl.uniform3f(U.uEchoC, ec.color[0], ec.color[1], ec.color[2]);
+      gl.uniform4f(U.uShape, 0, o.shapes.outlinePx * worldPerPx, 0, 1);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+      gl.drawElementsInstanced(gl.TRIANGLES, geo.indices.length, gl.UNSIGNED_SHORT, 0, eN);
+      gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
+      gl.uniform1f(U.uGhost, 0);
+      gl.bindVertexArray(null);
+    }
   }
 
   function frame(now) {
@@ -900,8 +857,8 @@ export function mountTilesHero(host, userOpts = {}) {
     get stats() { return { fps, dpr, count, vertices: geo.vertexCount * count * (socketsOn ? 2 : 1), triangles: (geo.indices.length / 3) * count * (socketsOn ? 2 : 1), tilePx: Math.round(o.tilePx(W, H)), reduceMotion }; },
     onStats: null,
     onFrame: null,
-    /** Отладка: сколько маленьких плиток в полёте. */
-    get sparks() { return { alive: pN }; },
+    /** Отладка: сколько контуров-эхо сейчас уходит вниз. */
+    get echoes() { return eN; },
     /** Отладка: образ — фаза (0 пауза, 1 проявление, 2 держим, 3 растворение), фигура, сколько плиток, где. */
     get shapeState() {
       let n = 0; for (let i = 0; i < count; i++) n += shapeMember[i];
