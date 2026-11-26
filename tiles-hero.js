@@ -115,6 +115,20 @@ const DEFAULTS = {
     outMs: 1000, spreadOutMs: 900,   // падение плитки и разброс: вразнобой
     gapMs: 1400,          // пауза между образами
   },
+  // Искры под плиткой, которую держит курсор: плитка — как капсула на взлёте. Искра рождается красной (цвет
+  // свечения плитки при наведении), белеет и тает; под плиткой — слабое красное свечение. Владелец, 27.11.2026.
+  sparks: {
+    enabled: true,
+    rate: 90,                 // искр в секунду с одной плитки
+    life: [0.6, 1.2],         // жизнь искры, с
+    speed: [700, 1300],       // скорость вниз на старте, единиц Spline в секунду (плитка — 1034)
+    spread: 180,              // разлёт вбок, единиц в секунду
+    gravity: 900,             // ускорение вниз, единиц в секунду²
+    size: [0.06, 0.12],       // спрайт искры с ореолом, доля шага ромба (130 px → 8–16 px)
+    color: [1, 0.3786, 0.3786],   // красный свечения плитки при наведении (слой depth Spline)
+    glow: 0.45,               // яркость свечения под плиткой
+    glowSize: 1.3,            // его размер, доля шага ромба
+  },
   background: [0, 0, 0],
   pointerTarget: null,   // элемент, на котором слушать курсор; по умолчанию window
   debug: false,
@@ -322,6 +336,31 @@ void main() {
   outColor = vec4(c, 1.0);
 }`;
 
+/* ---------- Искры и свечение: точки-спрайты, смешивание «экран» ---------- */
+const VERT_P = `#version 300 es
+layout(location=0) in vec4 aP;      // xyz — мир, w — размер спрайта, CSS px
+layout(location=1) in vec4 aC;      // цвет и непрозрачность
+uniform mat4 uViewProj;
+uniform float uPx;                  // пикселей устройства на CSS px
+out vec4 vC;
+void main() {
+  vC = aC;
+  gl_Position = uViewProj * vec4(aP.xyz, 1.0);
+  gl_PointSize = aP.w * uPx;
+}`;
+const FRAG_P = `#version 300 es
+precision mediump float;
+in vec4 vC;
+uniform float uGlow;                // 1 — только ореол (свечение под плиткой), 0 — искра: точка и ореол
+out vec4 outColor;
+void main() {
+  float r = length(gl_PointCoord - 0.5) * 2.0;
+  float core = (1.0 - smoothstep(0.0, 0.34, r)) * (1.0 - uGlow);
+  float halo = exp(-r * r * 4.5) * (1.0 - smoothstep(0.75, 1.0, r));
+  float a = vC.a * clamp(core + mix(0.45, 1.0, uGlow) * halo, 0.0, 1.0);
+  outColor = vec4(vC.rgb * a, a);
+}`;
+
 /* ---------- Матрицы ---------- */
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -344,7 +383,8 @@ function compile(gl, type, src) {
 /* ---------- Монтирование ---------- */
 export function mountTilesHero(host, userOpts = {}) {
   const o = { ...DEFAULTS, ...userOpts, wave: { ...DEFAULTS.wave, ...(userOpts.wave || {}) },
-    shapes: { ...DEFAULTS.shapes, ...(userOpts.shapes || {}) } };
+    shapes: { ...DEFAULTS.shapes, ...(userOpts.shapes || {}) },
+    sparks: { ...DEFAULTS.sparks, ...(userOpts.sparks || {}) } };
   const canvas = document.createElement('canvas');
   canvas.className = 'tiles-hero__canvas';
   canvas.setAttribute('aria-hidden', 'true');
@@ -390,6 +430,29 @@ export function mountTilesHero(host, userOpts = {}) {
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(3, 1);
   gl.bindVertexArray(null);
 
+  /* искры: программа, пул, буфер */
+  const progP = gl.createProgram();
+  gl.attachShader(progP, compile(gl, gl.VERTEX_SHADER, VERT_P));
+  gl.attachShader(progP, compile(gl, gl.FRAGMENT_SHADER, FRAG_P));
+  gl.linkProgram(progP);
+  if (!gl.getProgramParameter(progP, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progP));
+  const UP = { uViewProj: gl.getUniformLocation(progP, 'uViewProj'), uPx: gl.getUniformLocation(progP, 'uPx'),
+    uGlow: gl.getUniformLocation(progP, 'uGlow') };
+  const PMAX = 800, GMAX = 16;                         // искр в пуле, свечений под плитками
+  const pX = new Float32Array(PMAX), pY = new Float32Array(PMAX), pZ = new Float32Array(PMAX);
+  const pVX = new Float32Array(PMAX), pVY = new Float32Array(PMAX), pVZ = new Float32Array(PMAX);
+  const pAge = new Float32Array(PMAX), pLife = new Float32Array(PMAX), pSize = new Float32Array(PMAX);
+  let pN = 0, gN = 0;
+  const pData = new Float32Array((PMAX + GMAX) * 8);  // свечения первыми, затем искры
+  const vaoP = gl.createVertexArray();
+  gl.bindVertexArray(vaoP);
+  const pBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, pData.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 16);
+  gl.bindVertexArray(null);
+
   /* материал: постоянная часть */
   gl.useProgram(prog);
   const F = SPLINE.fresnel;
@@ -431,7 +494,8 @@ export function mountTilesHero(host, userOpts = {}) {
   let W = 1, H = 1, dpr = Math.min(o.maxDpr, window.devicePixelRatio || 1), halfW = 1, halfH = 1, viewProj = null;
   let count = 0, offsets = null, dyn = null;
   let liftV, liftFrom, phase, tStart;   // состояние наведения на плитку
-  let shapeV, shapeFrom, shapeDelay, shapeMember;   // образ: сила на плитке, с чего падает, задержка, входит ли
+  let shapeV, shapeFrom, shapeDelay, shapeMember;
+  let sparkAcc;                                       // искры: накопитель рождения на плитку   // образ: сила на плитке, с чего падает, задержка, входит ли
   const shape = { phase: 0, t: 0, k: -1, lastActive: 0, first: true };   // 0 пауза, 1 проявление, 2 держим, 3 растворение
 
   const P = SPLINE.pitch;
@@ -493,6 +557,7 @@ export function mountTilesHero(host, userOpts = {}) {
     dyn = new Float32Array(count * 3);
     shapeV = new Float32Array(count); shapeFrom = new Float32Array(count);
     shapeDelay = new Float32Array(count); shapeMember = new Uint8Array(count);
+    sparkAcc = new Float32Array(count);
     if (shape.phase !== 0) { shape.phase = 0; shape.t = performance.now(); }   // раскладка сменилась — образ заново
     liftV = new Float32Array(count); liftFrom = new Float32Array(count);
     phase = new Uint8Array(count); tStart = new Float64Array(count);
@@ -650,7 +715,47 @@ export function mountTilesHero(host, userOpts = {}) {
     }
   }
 
+  /* искры: рождаются под плиткой, которую держит курсор, падают, белеют и тают */
+  const sp = o.sparks, sparksOn = sp.enabled && !reduceMotion;
+  let sseed = 0x51a7c;   // свой генератор: образы и искры не сбивают друг другу случайность
+  const srnd = () => (sseed = (Math.imul(sseed, 1664525) + 1013904223) >>> 0) / 4294967296;
+  // Искры рождаются по передней кромке низа плитки (той, что смотрит на камеру): оттуда они видны сразу,
+  // а из-под середины низа их закрыла бы сама плитка
+  const SR = SPLINE.tile.size * 0.46, camA = Math.atan2(hz[2], hz[0]);
+  let lastUpd = null;
+  function emitSpark(x, y, z) {
+    if (pN >= PMAX) return;
+    const a = camA + (srnd() * 2 - 1) * 1.25, r = SR * (0.75 + 0.25 * srnd());
+    pX[pN] = x + Math.cos(a) * r; pY[pN] = y; pZ[pN] = z + Math.sin(a) * r;
+    pVX[pN] = (srnd() * 2 - 1) * sp.spread + Math.cos(a) * sp.spread * 0.5;
+    pVZ[pN] = (srnd() * 2 - 1) * sp.spread + Math.sin(a) * sp.spread * 0.5;
+    pVY[pN] = -(sp.speed[0] + srnd() * (sp.speed[1] - sp.speed[0]));
+    pAge[pN] = 0; pLife[pN] = sp.life[0] + srnd() * (sp.life[1] - sp.life[0]);
+    pSize[pN] = sp.size[0] + srnd() * (sp.size[1] - sp.size[0]);
+    pN++;
+  }
+  function updateSparks(dt) {
+    const tile = o.tilePx(W, H), c = sp.color;
+    let j = 0;
+    for (let k = 0; k < pN; k++) {
+      const age = pAge[k] + dt;
+      if (age >= pLife[k]) continue;
+      const vy = pVY[k] - sp.gravity * dt;
+      pX[j] = pX[k] + pVX[k] * dt; pY[j] = pY[k] + vy * dt; pZ[j] = pZ[k] + pVZ[k] * dt;
+      pVX[j] = pVX[k]; pVY[j] = vy; pVZ[j] = pVZ[k]; pAge[j] = age; pLife[j] = pLife[k]; pSize[j] = pSize[k];
+      const t = age / pLife[j], q = (gN + j) * 8;
+      pData[q] = pX[j]; pData[q + 1] = pY[j]; pData[q + 2] = pZ[j];
+      pData[q + 3] = Math.max(3, pSize[j] * tile * (1 + 0.6 * t));
+      pData[q + 4] = c[0] + (1 - c[0]) * t; pData[q + 5] = c[1] + (1 - c[1]) * t; pData[q + 6] = c[2] + (1 - c[2]) * t;
+      pData[q + 7] = 1 - easeOut(t);                  // гаснет по кривой «назад»: долго горит, быстро тает
+      j++;
+    }
+    pN = j;
+  }
+
   function update(now) {
+    const dt = lastUpd === null ? 0 : Math.min(Math.max((now - lastUpd) / 1000, 0), 0.05);
+    lastUpd = now; gN = 0;
     updateShape(now);
     const ptr = pointerActive(now) ? pointer : null;
     for (let i = 0; i < count; i++) {
@@ -686,15 +791,45 @@ export function mountTilesHero(host, userOpts = {}) {
         }
       }
       liftV[i] = v;
+      if (sparksOn && (phase[i] === 1 || phase[i] === 2) && v > 0.25) {
+        // курсор держит плитку: из-под низа сыплются искры, под ней — свечение
+        const waveY = waveOn ? (1 - v * (ocean ? 0 : 1)) * w * (ocean ? wv.swell : wv.amplitude) : 0;
+        const yb = SPLINE.icon.baseY + v * SPLINE.icon.liftY + waveY;
+        sparkAcc[i] += sp.rate * dt * v;
+        while (sparkAcc[i] >= 1) { emitSpark(x, yb - 4, z); sparkAcc[i] -= 1; }
+        if (gN < GMAX) {
+          const q = gN * 8, c = sp.color;
+          pData[q] = x; pData[q + 1] = yb - 60; pData[q + 2] = z; pData[q + 3] = o.tilePx(W, H) * sp.glowSize;
+          pData[q + 4] = c[0]; pData[q + 5] = c[1]; pData[q + 6] = c[2]; pData[q + 7] = sp.glow * v;
+          gN++;
+        }
+      }
       dyn[i * 3] = v;
       dyn[i * 3 + 1] = w;
       dyn[i * 3 + 2] = shapeV[i];
     }
+    if (pN) updateSparks(dt);
   }
 
   let soloIdx = -1;    // отладка: рисовать одну плитку на чёрном
+  function drawPoints(first, n, glow) {
+    gl.useProgram(progP);
+    gl.uniformMatrix4fv(UP.uViewProj, false, viewProj);
+    gl.uniform1f(UP.uPx, dpr);
+    gl.uniform1f(UP.uGlow, glow ? 1 : 0);
+    gl.bindVertexArray(vaoP);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR);   // «экран», как слои Spline
+    gl.depthMask(false);
+    gl.disable(gl.DEPTH_TEST);   // свечение — под плитками, искры — поверх поля
+    gl.drawArrays(gl.POINTS, first, n);
+    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+  }
   function draw() {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (gN + pN) { gl.bindBuffer(gl.ARRAY_BUFFER, pBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, pData.subarray(0, (gN + pN) * 8)); }
+    // свечение под плиткой — первым и без глубины: плитки ложатся поверх, его видно только в щелях вокруг
+    if (gN) drawPoints(0, gN, true);
     gl.useProgram(prog);
     gl.uniformMatrix4fv(U.uViewProj, false, viewProj);
     gl.uniform1f(U.uWaveTint, ocean ? 0 : 1);
@@ -733,6 +868,8 @@ export function mountTilesHero(host, userOpts = {}) {
     gl.uniform4f(U.uShape, reduceMotion ? 0 : sh.lift, sh.outlinePx * worldPerPx, sh.outlineColor / 255, 1);
     gl.drawElementsInstanced(gl.TRIANGLES, geo.indices.length, gl.UNSIGNED_SHORT, 0, n);
     gl.bindVertexArray(null);
+    // искры — после плиток и поверх них: сыплются из-под передней кромки вниз по полю
+    if (pN) drawPoints(gN, pN, false);
   }
 
   function frame(now) {
@@ -770,6 +907,8 @@ export function mountTilesHero(host, userOpts = {}) {
     get stats() { return { fps, dpr, count, vertices: geo.vertexCount * count * (socketsOn ? 2 : 1), triangles: (geo.indices.length / 3) * count * (socketsOn ? 2 : 1), tilePx: Math.round(o.tilePx(W, H)), reduceMotion }; },
     onStats: null,
     onFrame: null,
+    /** Отладка: сколько искр в полёте и свечений под плитками. */
+    get sparks() { return { alive: pN, glows: gN }; },
     /** Отладка: образ — фаза (0 пауза, 1 проявление, 2 держим, 3 растворение), фигура, сколько плиток, где. */
     get shapeState() {
       let n = 0; for (let i = 0; i < count; i++) n += shapeMember[i];
