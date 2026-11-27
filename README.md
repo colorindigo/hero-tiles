@@ -17,7 +17,8 @@
 | Файл | Что это |
 |---|---|
 | `tiles-hero.js` | модуль: `mountTilesHero(element, options)` |
-| `TilesHero.tsx` | обвязка для Next.js; без WebGL2 оставляет видео |
+| `TilesHero.tsx` | обвязка для Next.js; без WebGL2 оставляет видео, после сброса WebGL собирает поле заново |
+| `tiles-hero.d.ts` | типы модуля для TypeScript |
 | `index.html` | поле на весь экран |
 | `home.html` | копия главной с полем в хиро |
 
