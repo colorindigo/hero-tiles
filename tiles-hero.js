@@ -125,6 +125,9 @@ const DEFAULTS = {
   },
   background: [0, 0, 0],
   pointerTarget: null,   // элемент, на котором слушать курсор; по умолчанию window
+  // Браузер вернул сброшенный WebGL (телефоны сбрасывают его при нехватке памяти или в фоне).
+  // Поле само себя не пересобирает: обвязка снимает его destroy() и монтирует заново (см. TilesHero.tsx).
+  onContextRestored: null,
   debug: false,
 };
 
@@ -782,12 +785,17 @@ export function mountTilesHero(host, userOpts = {}) {
 
   const start = () => { if (!running) { running = true; last = performance.now(); raf = requestAnimationFrame(frame); } };
   const stop = () => { running = false; cancelAnimationFrame(raf); };
-  let visible = true;
-  const sync = () => (visible && !document.hidden ? start() : stop());
+  let visible = true, lost = false;
+  const sync = () => (visible && !document.hidden && !lost ? start() : stop());
+  // Сброс WebGL: без preventDefault браузер контекст не вернёт; пока его нет, цикл стоит
+  const onLost = (e) => { e.preventDefault(); lost = true; stop(); };
+  const onRestored = () => { if (o.onContextRestored) o.onContextRestored(); };
+  canvas.addEventListener('webglcontextlost', onLost);
+  canvas.addEventListener('webglcontextrestored', onRestored);
   const io = new IntersectionObserver(([e]) => { visible = e.isIntersecting; sync(); });
   io.observe(host);
   document.addEventListener('visibilitychange', sync);
-  const ro = new ResizeObserver(() => { layout(); if (!running) { update(performance.now()); draw(); } });
+  const ro = new ResizeObserver(() => { if (lost) return; layout(); if (!running) { update(performance.now()); draw(); } });
   ro.observe(host);
 
   layout();
@@ -854,7 +862,9 @@ export function mountTilesHero(host, userOpts = {}) {
       document.removeEventListener('pointerout', onOut);
       document.removeEventListener('visibilitychange', sync);
       window.removeEventListener('blur', onBlur);
-      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
+      if (!lost) gl.getExtension('WEBGL_lose_context')?.loseContext();
       canvas.remove();
     },
   };

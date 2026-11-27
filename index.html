@@ -18,7 +18,7 @@
 <div class="stage" id="stage"></div>
 <div class="hud" id="hud" hidden></div>
 <script type="module">
-  import { mountTilesHero } from './tiles-hero.js?v=big2';
+  import { mountTilesHero } from './tiles-hero.js?v=ctx3';
   const q = new URLSearchParams(location.search);
   const debug = q.has('debug');
   // ?nowave · ?wave=spline · ?length=12&period=3.4&swell=220 — зыбь · ?tile=151 — шаг ромбов в CSS px
@@ -34,16 +34,22 @@
   else if (q.get('shapes')) opts.shapes = { list: q.get('shapes').split(',') };
   if (q.has('elev')) opts.elevationDeg = +q.get('elev');   // угол камеры, градусы
   if (q.has('dpr')) opts.minDpr = opts.maxDpr = +q.get('dpr');   // для замеров: без адаптивной плотности
-  const field = mountTilesHero(document.getElementById('stage'), opts);
-  window.__field = field;
-  if (debug && field) {
+  // телефон может сбросить WebGL: когда контекст вернётся, поле монтируется заново
+  opts.onContextRestored = () => { window.__field.destroy(); mount(); };
+  const mount = () => {
+    const field = mountTilesHero(document.getElementById('stage'), opts);
+    window.__field = field;
+    if (debug && field) showHud(field);
+  };
+  const showHud = (field) => {
     const hud = document.getElementById('hud');
     hud.hidden = false;
     field.onStats = (s) => {
       const sh = field.shapeState;
       hud.textContent = `${s.fps.toFixed(0)} fps · ${s.count} плиток по ${s.tilePx} px · dpr ${s.dpr} · ${s.reduceMotion ? 'уменьшение движения ВКЛ' : 'движение обычное'} · образ: ${['пауза', 'проявление', 'держим', 'растворение'][sh.phase]}`;
     };
-  }
+  };
+  mount();
 </script>
 </body>
 </html>

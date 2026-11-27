@@ -7,8 +7,15 @@
   .hero__scene .tiles-hero__canvas { position: absolute; inset: 0; }
 </style>
 <script type="module">
-  import { mountTilesHero } from './tiles-hero.js?v=big2';
+  import { mountTilesHero } from './tiles-hero.js?v=ctx3';
   const scene = document.querySelector('.hero__scene');
-  window.__field = mountTilesHero(scene, { pointerTarget: document.querySelector('header.hero') });
+  // телефон может сбросить WebGL: когда контекст вернётся, поле монтируется заново
+  const mount = () => {
+    window.__field = mountTilesHero(scene, {
+      pointerTarget: document.querySelector('header.hero'),
+      onContextRestored: () => { window.__field.destroy(); mount(); },
+    });
+  };
+  mount();
 </script>
 </body></html>
