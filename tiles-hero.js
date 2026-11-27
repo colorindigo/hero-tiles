@@ -61,10 +61,17 @@ const SPLINE = {
 
 const DEFAULTS = {
   // Шаг ромбов по горизонтали, CSS px. Функция от ширины хоста.
-  // Шаг ромбов, CSS px. Ноутбук и шире — ширина / 11 (1440 → 130, потолок 130). Телефон — сильно крупнее,
-  // ширина / 5.5 (390 → 71), но не больше 72, пока ширина / 11 не догонит: формула непрерывна, скачков нет.
-  // Владелец, 27.11.2026: «для мобилки прям сильно крупнее плитки должны быть» (было 35 px на 390).
-  tilePx: (w) => Math.min(130, Math.max(w / 11, Math.min(w / 5.5, 72))),
+  // Шаг ромбов, CSS px. Ноутбук и шире — ширина / 11 (1440 → 130, потолок 130), планшет 768 — 72.
+  // Телефон (480 и уже) — ширина / 2.75, не больше 144: 390 → 142, 360 → 131; крайние ромбы уходят за край экрана.
+  // Между 480 и 768 — плавный переход, скачков при изменении ширины нет.
+  // Владелец, 27.11.2026: «для мобилки прям сильно крупнее плитки должны быть» (35 → 71 px на 390),
+  // затем «увеличить размер плиток где-то в 2 [раза], чтоб ушли за экран по ширине» (71 → 142).
+  tilePx: (w) => {
+    const desk = Math.min(130, Math.max(w / 11, Math.min(w / 5.5, 72)));
+    const phone = Math.min(w / 2.75, 144);
+    const t = Math.min(1, Math.max(0, (w - 480) / (768 - 480)));
+    return phone + (desk - phone) * t;
+  },
   maxDpr: 2,
   minDpr: 1,
   riseMs: 500,
@@ -146,7 +153,9 @@ function makeEase([x1, y1, x2, y2], n = 1024) {
 const art = (rows) => {
   const set = new Set(rows.map(([x, y]) => x + ',' + y));
   const w = Math.max(...rows.map(([x]) => Math.abs(x))) + 1;   // ширина в шагах ромбов
-  return Object.assign((u, v, ix, iy) => set.has(ix + ',' + iy), { minTiles: w });
+  const ys = rows.map(([, y]) => y);
+  return Object.assign((u, v, ix, iy) => set.has(ix + ',' + iy),
+    { minTiles: w, maxX: w - 1, minY: Math.min(...ys), maxY: Math.max(...ys) });
 };
 const mirror = (half) => half.concat(half.filter(([x]) => x !== 0).map(([x, y]) => [-x, y]));
 export const SHAPES = {
@@ -163,6 +172,11 @@ SHAPES.heart.small = art(mirror([[0, 4], [1, 3], [2, 2], [3, 1], [3, -1], [2, -2
 SHAPES.chevrons.small = art(mirror([[0, -4], [1, -3], [2, -2], [3, -1], [0, 0], [1, 1], [2, 2], [3, 3]]));
 SHAPES.play.small = art([[-2, -4], [-2, -2], [-2, 0], [-2, 2], [-2, 4],
   [-1, -3], [0, -2], [1, -1], [2, 0], [1, 1], [0, 2], [-1, 3]]);
+// Самые малые — для телефона с плиткой ~140 px, где в ширину помещается меньше трёх ромбов: 5 полшагов в ширину,
+// крайние ромбы могут уйти за край экрана не больше чем на четверть. У плея малая версия уже такой ширины.
+SHAPES.heart.tiny = art(mirror([[0, 2], [1, 1], [2, 0], [1, -1], [0, 0]]));
+SHAPES.chevrons.tiny = art(mirror([[0, -2], [1, -1], [2, 0], [0, 2], [1, 3], [2, 4]]));
+SHAPES.play.tiny = SHAPES.play.small;
 
 /* ---------- Геометрия плитки: скруглённый квадрат, стенка + фаска + крышка ---------- */
 function buildTile({ size, radius, depth, bevel }, cornerSeg = 10, bevelSeg = 5) {
@@ -586,22 +600,31 @@ export function mountTilesHero(host, userOpts = {}) {
   function startShape(now) {
     const tile = o.tilePx(W, H);
     const size = Math.min(sh.size * tile, 0.95 * W - tile, 0.95 * H - tile / 2), R = size / 2;
+    // шаг решётки на экране: полшага ромба по горизонтали и ряд по вертикали
+    const s0 = toScreen([0, topRest, 0]), s1 = toScreen([P, topRest, 0]);
+    const la = Math.abs((s1[0] - s0[0]) / 2) * W, lb = Math.abs((s1[1] - s0[1]) / 2) * H;
     // следующая фигура, которая помещается (нарисованным в клетках нужен свой минимум)
-    let f = null;
+    let f = null, crop = false;
     const fits = (g) => g && !(g.minTiles && size < g.minTiles * tile);
+    // самая малая версия на телефоне: по центру экрана, крайние ромбы уходят за край не больше чем на четверть
+    const fitsCrop = (g) => g && g.maxX * la + la / 2 <= W / 2
+      && (g.maxY - g.minY + 2) * lb + tile / 2 <= 0.95 * H;
     for (let n = 0; n < sh.list.length && !f; n++) {
       shape.k = (shape.k + 1) % sh.list.length;
       const g = SHAPES[sh.list[shape.k]];
       f = fits(g) ? g : fits(g && g.small) ? g.small : null;   // не влезает — малая версия
+      if (!f && fitsCrop(g && g.tiny)) { f = g.tiny; crop = true; }
     }
-    if (!f) { shape.t = now; return; }   // ни одна фигура не помещается (узкий телефон): пропускаем круг
-    // шаг решётки на экране: полшага ромба по горизонтали и ряд по вертикали
-    const s0 = toScreen([0, topRest, 0]), s1 = toScreen([P, topRest, 0]);
-    const la = Math.abs((s1[0] - s0[0]) / 2) * W, lb = Math.abs((s1[1] - s0[1]) / 2) * H;
+    if (!f) { shape.t = now; return; }   // ни одна фигура не помещается: пропускаем круг
     // место — случайное, с запасом в плитку от краёв (поднятые плитки рисуются выше своего места);
     // центр притягивается к центру ближайшей плитки, чтобы фигура складывалась симметрично
     const mx = R + tile / 2, my = R + tile / 2;
     let cx = mx + rnd() * Math.max(0, W - 2 * mx), cy = my + rnd() * Math.max(0, H - 2 * my);
+    if (crop) {
+      // по горизонтали — центр экрана; по вертикали — случайно, от краёв фигуры до краёв экрана
+      const top = (-f.minY + 1) * lb + tile / 2, bot = (f.maxY + 1) * lb;
+      cx = W / 2; cy = top + rnd() * Math.max(0, H - top - bot);
+    }
     const scr = new Float32Array(count * 2);
     let best = Infinity;
     for (let i = 0; i < count; i++) {
